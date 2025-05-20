@@ -96,6 +96,16 @@ class CRLEntry
     }
     
     /**
+     * 获取撤销原因代码（getReasonCode的别名）
+     *
+     * @return int|null
+     */
+    public function getReason(): ?int
+    {
+        return $this->reasonCode;
+    }
+    
+    /**
      * 获取失效日期
      *
      * @return DateTimeImmutable|null

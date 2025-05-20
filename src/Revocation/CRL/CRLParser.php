@@ -53,76 +53,7 @@ class CRLParser
     {
         try {
             // 使用OpenSSL解析CRL
-            $crlInfo = [];
-            
-            // 将DER数据转换为临时文件以供OpenSSL使用
-            $tempFile = tempnam(sys_get_temp_dir(), 'crl');
-            if ($tempFile === false) {
-                throw CRLException::parseError('创建临时文件失败');
-            }
-            
-            try {
-                file_put_contents($tempFile, $derData);
-                
-                // 使用openssl命令行工具解析CRL
-                $command = 'openssl crl -inform DER -in ' . escapeshellarg($tempFile) . ' -noout -text';
-                $output = [];
-                $exitCode = 0;
-                exec($command, $output, $exitCode);
-                
-                if ($exitCode !== 0) {
-                    throw CRLException::parseError('OpenSSL命令执行失败');
-                }
-                
-                // 解析输出以提取CRL信息
-                $outputText = implode("\n", $output);
-                
-                // 提取颁发者
-                if (preg_match('/Issuer:\s*(.+)$/m', $outputText, $matches)) {
-                    $crlInfo['issuer'] = trim($matches[1]);
-                }
-                
-                // 提取lastUpdate
-                if (preg_match('/Last Update:\s*(.+)$/m', $outputText, $matches)) {
-                    $crlInfo['lastUpdate'] = trim($matches[1]);
-                }
-                
-                // 提取nextUpdate
-                if (preg_match('/Next Update:\s*(.+)$/m', $outputText, $matches)) {
-                    $crlInfo['nextUpdate'] = trim($matches[1]);
-                }
-                
-                // 提取签名算法
-                if (preg_match('/Signature Algorithm:\s*(.+)$/m', $outputText, $matches)) {
-                    $crlInfo['signatureAlgorithm'] = trim($matches[1]);
-                }
-                
-                // 提取CRL编号
-                if (preg_match('/CRL Number:\s*(.+)$/m', $outputText, $matches)) {
-                    $crlInfo['crlNumber'] = trim($matches[1]);
-                }
-                
-                // 提取撤销证书列表
-                $revokedCerts = [];
-                if (preg_match_all('/Serial Number:\s*(.+?)[\r\n]+\s*Revocation Date:\s*(.+?)(?:[\r\n]+\s*CRL entry extensions:[^\r\n]*[\r\n]+\s*X509v3 CRL Reason Code:\s*(.+?))?(?=[\r\n]+\s*Serial Number:|$)/s', $outputText, $matches, PREG_SET_ORDER)) {
-                    foreach ($matches as $match) {
-                        $serialNumber = trim($match[1]);
-                        $revocationDate = trim($match[2]);
-                        $reasonCode = isset($match[3]) ? trim($match[3]) : null;
-                        
-                        $revokedCerts[] = [
-                            'serialNumber' => $serialNumber,
-                            'revocationDate' => $revocationDate,
-                            'reasonCode' => $reasonCode,
-                        ];
-                    }
-                }
-                $crlInfo['revoked'] = $revokedCerts;
-                
-            } finally {
-                // 清理临时文件
-                @unlink($tempFile);
-            }
+            $crlInfo = $this->executeOpenSSLCommand($derData);
             
             // 创建CRL对象
             $issuerDN = $crlInfo['issuer'] ?? '';
@@ -185,6 +116,110 @@ class CRLParser
     }
     
     /**
+     * 执行OpenSSL命令解析CRL数据
+     *
+     * @param string $derData DER格式的CRL数据
+     * @return array 解析后的CRL信息
+     * @throws CRLException 如果执行命令失败
+     */
+    protected function executeOpenSSLCommand(string $derData): array
+    {
+        // 将DER数据转换为临时文件以供OpenSSL使用
+        $tempFile = tempnam(sys_get_temp_dir(), 'crl');
+        if ($tempFile === false) {
+            throw CRLException::parseError('创建临时文件失败');
+        }
+        
+        try {
+            file_put_contents($tempFile, $derData);
+            
+            // 使用openssl命令行工具解析CRL
+            $command = 'openssl crl -inform DER -in ' . escapeshellarg($tempFile) . ' -noout -text';
+            $output = [];
+            $exitCode = 0;
+            exec($command, $output, $exitCode);
+            
+            if ($exitCode !== 0) {
+                // 收集更多诊断信息
+                $errorMsg = '命令: ' . $command . ', 退出代码: ' . $exitCode;
+                if (!empty($output)) {
+                    $errorMsg .= ', 输出: ' . implode("\n", $output);
+                }
+                
+                // 尝试使用更简单的命令验证文件是否有效
+                $testCommand = 'openssl crl -inform DER -in ' . escapeshellarg($tempFile) . ' -noout';
+                $testOutput = [];
+                $testExitCode = 0;
+                exec($testCommand, $testOutput, $testExitCode);
+                
+                if ($testExitCode !== 0) {
+                    $errorMsg .= ', 文件验证失败: ' . implode("\n", $testOutput);
+                }
+                
+                throw CRLException::parseError('OpenSSL命令执行失败: ' . $errorMsg);
+            }
+            
+            // 解析输出以提取CRL信息
+            $outputText = implode("\n", $output);
+            
+            $crlInfo = [];
+            
+            // 提取颁发者
+            if (preg_match('/Issuer:\s*(.+)$/m', $outputText, $matches)) {
+                $crlInfo['issuer'] = trim($matches[1]);
+            }
+            
+            // 提取lastUpdate
+            if (preg_match('/Last Update:\s*(.+)$/m', $outputText, $matches)) {
+                $crlInfo['lastUpdate'] = trim($matches[1]);
+            }
+            
+            // 提取nextUpdate
+            if (preg_match('/Next Update:\s*(.+)$/m', $outputText, $matches)) {
+                $crlInfo['nextUpdate'] = trim($matches[1]);
+            }
+            
+            // 提取签名算法
+            if (preg_match('/Signature Algorithm:\s*(.+)$/m', $outputText, $matches)) {
+                $crlInfo['signatureAlgorithm'] = trim($matches[1]);
+            }
+            
+            // 提取CRL编号
+            if (preg_match('/CRL Number:\s*(.+)$/m', $outputText, $matches)) {
+                $crlInfo['crlNumber'] = trim($matches[1]);
+            }
+            
+            // 提取撤销证书列表
+            $revokedCerts = [];
+            if (preg_match_all('/Serial Number:\s*(.+?)[\r\n]+\s*Revocation Date:\s*(.+?)(?:[\r\n]+\s*CRL entry extensions:[^\r\n]*[\r\n]+\s*X509v3 CRL Reason Code:\s*(.+?))?(?=[\r\n]+\s*Serial Number:|$)/s', $outputText, $matches, PREG_SET_ORDER)) {
+                foreach ($matches as $match) {
+                    $serialNumber = trim($match[1]);
+                    $revocationDate = trim($match[2]);
+                    $reasonCode = isset($match[3]) ? trim($match[3]) : null;
+                    
+                    $revokedCerts[] = [
+                        'serialNumber' => $serialNumber,
+                        'revocationDate' => $revocationDate,
+                        'reasonCode' => $reasonCode,
+                    ];
+                }
+            }
+            $crlInfo['revoked'] = $revokedCerts;
+            
+            return $crlInfo;
+        } catch (CRLException $e) {
+            throw $e;
+        } catch (\Exception $e) {
+            throw CRLException::parseError('解析DER数据失败: ' . $e->getMessage());
+        } finally {
+            // 清理临时文件
+            if (file_exists($tempFile)) {
+                @unlink($tempFile);
+            }
+        }
+    }
+    
+    /**
      * 从URL获取并解析CRL
      *
      * @param string $url CRL的URL
@@ -195,18 +230,7 @@ class CRLParser
     {
         try {
             // 获取CRL数据
-            $context = stream_context_create([
-                'http' => [
-                    'method' => 'GET',
-                    'timeout' => 30,
-                    'header' => 'User-Agent: TLS-Certificate/1.0'
-                ]
-            ]);
-            
-            $crlData = @file_get_contents($url, false, $context);
-            if ($crlData === false) {
-                throw CRLException::notFound($url);
-            }
+            $crlData = $this->fetchData($url);
             
             // 根据内容类型选择解析方法
             if (strpos($crlData, '-----BEGIN') !== false) {
@@ -219,6 +243,31 @@ class CRLParser
         } catch (\Exception $e) {
             throw CRLException::notFound($url . ': ' . $e->getMessage());
         }
+    }
+    
+    /**
+     * 从URL获取数据
+     *
+     * @param string $url 要获取数据的URL
+     * @return string 获取到的数据
+     * @throws \Exception 如果获取失败
+     */
+    protected function fetchData(string $url): string
+    {
+        $context = stream_context_create([
+            'http' => [
+                'method' => 'GET',
+                'timeout' => 30,
+                'header' => 'User-Agent: TLS-Certificate/1.0'
+            ]
+        ]);
+        
+        $data = @file_get_contents($url, false, $context);
+        if ($data === false) {
+            throw new \Exception('无法从URL获取数据');
+        }
+        
+        return $data;
     }
     
     /**

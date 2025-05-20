@@ -102,20 +102,22 @@ class CRLCache
     /**
      * 移除过期的CRL
      *
-     * @return $this
+     * @return int 已移除的CRL数量
      */
-    public function removeExpired(): self
+    public function removeExpired(): int
     {
         $now = new DateTimeImmutable();
+        $removedCount = 0;
         
         foreach ($this->cache as $issuerDN => $crl) {
             $nextUpdate = $crl->getNextUpdate();
             if ($nextUpdate === null || $nextUpdate <= $now) {
                 unset($this->cache[$issuerDN]);
+                $removedCount++;
             }
         }
         
-        return $this;
+        return $removedCount;
     }
     
     /**

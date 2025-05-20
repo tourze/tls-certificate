@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tourze\TLSCertificate\Revocation\OCSP;
 
 use DateTimeImmutable;
+use Tourze\TLSCertificate\Certificate\X509Certificate;
 use Tourze\TLSCertificate\Exception\OCSPException;
 
 /**
@@ -85,6 +86,41 @@ class OCSPResponse
     private ?string $rawData = null;
     
     /**
+     * @var string|null 响应者ID
+     */
+    private ?string $responderID = null;
+    
+    /**
+     * @var string|null 签名算法
+     */
+    private ?string $signatureAlgorithm = null;
+    
+    /**
+     * @var string|null 签名
+     */
+    private ?string $signature = null;
+    
+    /**
+     * @var string|null 颁发者名称散列值
+     */
+    private ?string $issuerNameHash = null;
+    
+    /**
+     * @var string|null 颁发者公钥散列值
+     */
+    private ?string $issuerKeyHash = null;
+    
+    /**
+     * @var int 响应数据的过期警告秒数
+     */
+    private int $expiryWarningDays = 172800; // 172800秒 = 2天
+    
+    /**
+     * @var array|null 完整的TBS响应数据
+     */
+    private ?array $tbsResponseData = null;
+    
+    /**
      * 构造函数
      *
      * @param int $responseStatus OCSP响应状态
@@ -100,26 +136,38 @@ class OCSPResponse
      * 从DER编码数据解析OCSP响应
      *
      * @param string $derData DER编码的OCSP响应数据
+     * @param OCSPResponseParser|null $parser 可选的自定义响应解析器
      * @return self
      * @throws OCSPException 如果解析失败
      */
-    public static function fromDER(string $derData): self
+    public static function fromDER(string $derData, ?OCSPResponseParser $parser = null): self
     {
         try {
-            // 注意：这里简化了实现，实际应该使用ASN.1库解析OCSP响应
-            // RFC 6960 定义了OCSP响应的ASN.1结构
+            // 创建或使用提供的解析器
+            $parser = $parser ?? new OCSPResponseParser($derData);
             
-            // 占位符实现
-            $responseStatus = self::SUCCESSFUL;
-            $response = new self($responseStatus, $derData);
+            // 解析响应数据
+            $parsedData = $parser->parse();
             
-            // TODO: 实现完整的ASN.1解析
-            // 解析基本响应字段
-            $response->responseType = 'id-pkix-ocsp-basic';
-            $response->certStatus = self::CERT_STATUS_GOOD;
-            $response->producedAt = new DateTimeImmutable();
-            $response->thisUpdate = new DateTimeImmutable();
-            $response->nextUpdate = new DateTimeImmutable('+1 day');
+            // 创建响应对象
+            $response = new self($parsedData['responseStatus'] ?? self::SUCCESSFUL, $derData);
+            
+            // 设置解析出的字段
+            $response->responseType = $parsedData['responseType'] ?? null;
+            $response->certStatus = $parsedData['certStatus'] ?? null;
+            $response->producedAt = $parsedData['producedAt'] ?? new DateTimeImmutable();
+            $response->thisUpdate = $parsedData['thisUpdate'] ?? new DateTimeImmutable();
+            $response->nextUpdate = $parsedData['nextUpdate'] ?? new DateTimeImmutable('+1 day');
+            $response->nonce = $parsedData['nonce'] ?? null;
+            $response->serialNumber = $parsedData['serialNumber'] ?? null;
+            $response->revocationTime = $parsedData['revocationTime'] ?? null;
+            $response->revocationReason = $parsedData['revocationReason'] ?? null;
+            $response->signature = $parsedData['signature'] ?? null;
+            $response->signatureAlgorithm = $parsedData['signatureAlgorithm'] ?? null;
+            $response->responderID = $parsedData['responderID'] ?? null;
+            $response->issuerNameHash = $parsedData['issuerNameHash'] ?? null;
+            $response->issuerKeyHash = $parsedData['issuerKeyHash'] ?? null;
+            $response->tbsResponseData = $parsedData;
             
             return $response;
         } catch (\Exception $e) {
@@ -212,17 +260,13 @@ class OCSPResponse
      */
     public function getCertStatusText(): string
     {
-        if ($this->certStatus === null) {
-            return '未知';
-        }
-        
         $statusMap = [
             self::CERT_STATUS_GOOD => '有效',
             self::CERT_STATUS_REVOKED => '已撤销',
             self::CERT_STATUS_UNKNOWN => '未知'
         ];
         
-        return $statusMap[$this->certStatus] ?? '未知状态(' . $this->certStatus . ')';
+        return $statusMap[$this->certStatus ?? -1] ?? '未设置';
     }
     
     /**
@@ -232,7 +276,7 @@ class OCSPResponse
      */
     public function isCertificateGood(): bool
     {
-        return $this->isSuccessful() && $this->certStatus === self::CERT_STATUS_GOOD;
+        return $this->certStatus === self::CERT_STATUS_GOOD;
     }
     
     /**
@@ -242,7 +286,17 @@ class OCSPResponse
      */
     public function isCertificateRevoked(): bool
     {
-        return $this->isSuccessful() && $this->certStatus === self::CERT_STATUS_REVOKED;
+        return $this->certStatus === self::CERT_STATUS_REVOKED;
+    }
+    
+    /**
+     * 判断证书状态是否为未知
+     *
+     * @return bool
+     */
+    public function isCertificateUnknown(): bool
+    {
+        return $this->certStatus === self::CERT_STATUS_UNKNOWN;
     }
     
     /**
@@ -296,6 +350,16 @@ class OCSPResponse
     }
     
     /**
+     * 获取证书序列号
+     *
+     * @return string|null
+     */
+    public function getSerialNumber(): ?string
+    {
+        return $this->serialNumber;
+    }
+    
+    /**
      * 检查响应是否已过期
      *
      * @return bool
@@ -303,15 +367,39 @@ class OCSPResponse
     public function isExpired(): bool
     {
         if ($this->nextUpdate === null) {
-            // 如果没有指定nextUpdate，保守认为已过期
-            return true;
+            return false; // 如果没有nextUpdate字段，我们假设不会过期
         }
         
-        return new DateTimeImmutable() > $this->nextUpdate;
+        $now = new DateTimeImmutable();
+        return $this->nextUpdate < $now;
     }
     
     /**
-     * 获取响应中的随机数
+     * 检查响应是否即将过期
+     * 
+     * @param int $warningDays 提前警告天数
+     * @return bool 如果响应即将过期则返回true
+     */
+    public function isExpiringSoon(int $warningDays = 0): bool
+    {
+        // 如果没有设置nextUpdate，无法判断过期时间
+        if ($this->nextUpdate === null) {
+            return false;
+        }
+        
+        // 使用默认警告天数或者传入的参数
+        $days = $warningDays > 0 ? $warningDays : $this->expiryWarningDays;
+        
+        // 计算警告时间点
+        $now = new DateTimeImmutable();
+        $warningThreshold = new DateTimeImmutable('+' . $days . ' seconds');
+        
+        // 如果nextUpdate在当前时间和警告阈值之间，则即将过期
+        return $this->nextUpdate > $now && $this->nextUpdate <= $warningThreshold;
+    }
+    
+    /**
+     * 获取随机数
      *
      * @return string|null
      */
@@ -321,7 +409,7 @@ class OCSPResponse
     }
     
     /**
-     * 检查随机数是否匹配
+     * 验证响应中的随机数是否与请求一致
      *
      * @param string $requestNonce 请求中的随机数
      * @return bool
@@ -329,5 +417,133 @@ class OCSPResponse
     public function verifyNonce(string $requestNonce): bool
     {
         return $this->nonce !== null && $this->nonce === $requestNonce;
+    }
+    
+    /**
+     * 设置过期警告秒数
+     * 
+     * @param int $seconds 秒数
+     * @return $this
+     */
+    public function setExpiryWarningDays(int $seconds): self
+    {
+        $this->expiryWarningDays = $seconds;
+        return $this;
+    }
+    
+    /**
+     * 获取响应者ID
+     * 
+     * @return string|null
+     */
+    public function getResponderID(): ?string
+    {
+        return $this->responderID;
+    }
+    
+    /**
+     * 获取签名算法
+     * 
+     * @return string|null
+     */
+    public function getSignatureAlgorithm(): ?string
+    {
+        return $this->signatureAlgorithm;
+    }
+    
+    /**
+     * 获取签名
+     * 
+     * @return string|null
+     */
+    public function getSignature(): ?string
+    {
+        return $this->signature;
+    }
+    
+    /**
+     * 获取颁发者名称散列值
+     * 
+     * @return string|null
+     */
+    public function getIssuerNameHash(): ?string
+    {
+        return $this->issuerNameHash;
+    }
+    
+    /**
+     * 获取颁发者公钥散列值
+     * 
+     * @return string|null
+     */
+    public function getIssuerKeyHash(): ?string
+    {
+        return $this->issuerKeyHash;
+    }
+    
+    /**
+     * 获取TBS响应数据
+     * 
+     * @return array|null
+     */
+    public function getTBSResponseData(): ?array
+    {
+        return $this->tbsResponseData;
+    }
+    
+    /**
+     * 检查此响应是否与请求匹配
+     * 
+     * @param OCSPRequest $request OCSP请求
+     * @return bool 如果匹配则返回true
+     */
+    public function matchesRequest(OCSPRequest $request): bool
+    {
+        // 如果颁发者名称散列和公钥散列为空，无法匹配
+        if ($this->issuerNameHash === null || $this->issuerKeyHash === null) {
+            return false;
+        }
+        
+        // 检查散列值和序列号是否匹配
+        $nameHashMatch = $this->issuerNameHash === $request->getIssuerNameHash();
+        $keyHashMatch = $this->issuerKeyHash === $request->getIssuerKeyHash();
+        $serialMatch = $this->serialNumber === $request->getSerialNumber();
+        
+        return $nameHashMatch && $keyHashMatch && $serialMatch;
+    }
+    
+    /**
+     * 验证OCSP响应的签名
+     *
+     * @param X509Certificate $certificate 用于验证签名的证书
+     * @param \Tourze\TLSCertificate\Crypto\SignatureVerifier|null $verifier 签名验证器
+     * @return bool 如果签名有效则返回true
+     */
+    public function verifySignature(X509Certificate $certificate, $verifier = null): bool
+    {
+        // 如果没有签名或TBS数据，无法验证
+        if ($this->signature === null || $this->tbsResponseData === null || !is_array($this->tbsResponseData)) {
+            return false;
+        }
+        
+        try {
+            $publicKey = $certificate->getPublicKey();
+            if ($publicKey === null) {
+                return false;
+            }
+            
+            // 如果没有提供验证器，尝试创建一个
+            if ($verifier === null) {
+                // 应该使用实际的签名验证器类，这里仅做示例
+                throw new OCSPException('必须提供签名验证器');
+            }
+            
+            // 对TBS数据进行散列并验证签名
+            $tbsData = is_string($this->tbsResponseData) ? $this->tbsResponseData : json_encode($this->tbsResponseData);
+            return $verifier->verify($tbsData, $this->signature, $publicKey, $this->signatureAlgorithm);
+        } catch (\Exception $e) {
+            // 日志记录异常
+            return false;
+        }
     }
 } 

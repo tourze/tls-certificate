@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tourze\TLSCertificate\Revocation\CRL;
 
+use DateTimeImmutable;
 use Tourze\TLSCertificate\Certificate\X509Certificate;
 use Tourze\TLSCertificate\Crypto\SignatureVerifier;
 use Tourze\TLSCertificate\Exception\CRLException;
@@ -58,6 +59,15 @@ class CRLValidator
             }
             
             // 2. 验证有效期
+            $now = new DateTimeImmutable();
+            
+            // 检查CRL是否已生效
+            if ($crl->getThisUpdate() > $now) {
+                $result->addError('CRL尚未生效');
+                return $result;
+            }
+            
+            // 检查CRL是否已过期
             if ($crl->isExpired()) {
                 $result->addWarning('CRL已过期');
                 // 不直接返回，允许继续验证，但会标记警告
@@ -71,12 +81,16 @@ class CRLValidator
                 
                 $issuerPublicKey = $actualIssuerCert->getPublicKey();
                 
-                // 此处应使用签名验证器验证CRL签名
-                // 由于我们没有完整的实现，这里做一个简化的模拟
-                $isSignatureValid = true; // 假设签名有效
+                // 使用签名验证器验证CRL签名
+                $isSignatureValid = $this->signatureVerifier->verify(
+                    $crl->getRawData(),
+                    $crl->getSignatureValue(),
+                    $issuerPublicKey,
+                    $crl->getSignatureAlgorithm()
+                );
                 
                 if (!$isSignatureValid) {
-                    $result->addError('CRL签名验证失败');
+                    $result->addError('CRL签名无效');
                     return $result;
                 }
                 
@@ -125,6 +139,14 @@ class CRLValidator
             // 检查证书是否在CRL中
             if ($crl->isRevoked($serialNumber)) {
                 $revokedCert = $crl->getRevokedCertificate($serialNumber);
+                
+                // 检查是否为REMOVE_FROM_CRL标志
+                if ($revokedCert->getReason() === 8) { // 8 = REMOVE_FROM_CRL
+                    $result->addInfo('证书已从CRL中移除');
+                    $result->addSuccess('证书撤销检查通过');
+                    return $result;
+                }
+                
                 $revocationDate = $revokedCert->getRevocationDate()->format('Y-m-d H:i:s');
                 $reason = $revokedCert->getReasonText();
                 

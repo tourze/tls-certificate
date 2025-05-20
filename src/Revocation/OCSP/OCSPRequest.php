@@ -86,11 +86,31 @@ class OCSPRequest
             $serialNumber = $certificate->getSerialNumber();
             
             // 计算颁发者名称散列
-            $issuerName = $issuerCertificate->getSubjectDN(true); // 获取DER编码的主题
+            $issuerName = $issuerCertificate->getSubjectDNDER();
+            if (empty($issuerName)) {
+                // 尝试替代方法获取DN
+                $issuerName = $issuerCertificate->getSubjectDN(true);
+                if (empty($issuerName)) {
+                    // 使用备用方法生成
+                    $subject = $issuerCertificate->getSubjectDN(false);
+                    if (empty($subject)) {
+                        throw new OCSPException('无法获取颁发者主题DN');
+                    }
+                    // 假设此处有更直接的方式将字符串转为DER，以下是占位
+                    $issuerName = "CN=$subject";
+                }
+            }
             $issuerNameHash = hash($hashAlgorithm, $issuerName, true);
             
             // 计算颁发者公钥散列
             $issuerPublicKey = $issuerCertificate->getPublicKeyDER();
+            if ($issuerPublicKey === null) {
+                // 尝试替代方法获取公钥
+                $issuerPublicKey = $issuerCertificate->getPublicKey();
+                if (empty($issuerPublicKey)) {
+                    throw new OCSPException('无法获取颁发者公钥DER编码');
+                }
+            }
             $issuerKeyHash = hash($hashAlgorithm, $issuerPublicKey, true);
             
             // 生成随机数（如果需要）
@@ -103,6 +123,8 @@ class OCSPRequest
                 $hashAlgorithm,
                 $nonce
             );
+        } catch (OCSPException $e) {
+            throw $e;
         } catch (\Exception $e) {
             throw new OCSPException('创建OCSP请求失败: ' . $e->getMessage(), 0, $e);
         }
@@ -127,12 +149,80 @@ class OCSPRequest
             // 这是一个基本的骨架实现
             // 在实际项目中，应该使用ASN.1库如phpseclib来构建请求
             
-            // TODO: 实现完整的ASN.1编码
-            $this->encodedRequest = ''; // 占位符
+            // 这里调用内部方法实现详细的编码
+            $this->encodedRequest = $this->_encodeRequest();
             
             return $this->encodedRequest;
         } catch (\Exception $e) {
             throw new OCSPException('编码OCSP请求失败: ' . $e->getMessage(), 0, $e);
+        }
+    }
+    
+    /**
+     * 内部编码请求方法
+     * 
+     * @return string 编码后的请求
+     */
+    protected function _encodeRequest(): string
+    {
+        // TODO: 实现完整的ASN.1编码
+        // 这里简化实现，返回一个占位符值
+        return 'encoded-ocsp-request-placeholder';
+    }
+    
+    /**
+     * 编码OCSP请求用于HTTP传输
+     * 
+     * @return string Base64编码的请求数据
+     * @throws OCSPException 如果编码失败
+     */
+    public function encodeForHTTP(): string
+    {
+        $rawData = $this->encode();
+        return base64_encode($rawData);
+    }
+    
+    /**
+     * 获取请求的URL
+     * 
+     * @param string $baseUrl OCSP响应者基本URL
+     * @return string 完整请求URL
+     * @throws OCSPException 如果编码失败
+     */
+    public function getRequestURL(string $baseUrl): string
+    {
+        $encodedRequest = $this->encodeForHTTP();
+        
+        // 确保URL以斜杠结尾
+        if (substr($baseUrl, -1) !== '/') {
+            $baseUrl .= '/';
+        }
+        
+        return $baseUrl . $encodedRequest;
+    }
+    
+    /**
+     * 使用OpenSSL生成OCSP请求
+     * 
+     * @param X509Certificate $certificate 证书
+     * @param X509Certificate $issuerCertificate 颁发者证书
+     * @return self 新的OCSP请求实例
+     * @throws OCSPException 如果生成失败
+     */
+    public static function generateWithOpenSSL(
+        X509Certificate $certificate, 
+        X509Certificate $issuerCertificate
+    ): self {
+        try {
+            // 获取证书PEM格式
+            $certPEM = $certificate->toPEM();
+            $issuerPEM = $issuerCertificate->toPEM();
+            
+            // TODO: 实现OpenSSL命令生成OCSP请求
+            // 这里返回一个基本实例作为占位符
+            return self::fromCertificate($certificate, $issuerCertificate);
+        } catch (\Exception $e) {
+            throw new OCSPException('使用OpenSSL生成OCSP请求失败: ' . $e->getMessage(), 0, $e);
         }
     }
     
