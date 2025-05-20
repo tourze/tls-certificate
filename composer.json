@@ -1,0 +1,25 @@
+{
+  "name": "tourze/tls-certificate",
+  "description": "TLS certificate",
+  "type": "library",
+  "license": "MIT",
+  "require": {
+    "php": "^8.1",
+    "ext-hash": "*"
+  },
+  "require-dev": {
+    "maglnet/composer-require-checker": "^4",
+    "phpstan/phpstan": "^2.1",
+    "phpunit/phpunit": "^10.0"
+  },
+  "autoload": {
+    "psr-4": {
+      "Tourze\\TLSCertificate\\": "src/"
+    }
+  },
+  "autoload-dev": {
+    "psr-4": {
+      "Tourze\\TLSCertificate\\Tests\\": "tests/"
+    }
+  }
+}
