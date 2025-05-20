@@ -79,9 +79,10 @@ class CRLCache
      * 检查CRL是否即将过期
      *
      * @param string $issuerDN 颁发者可分辨名称
+     * @param int|null $threshold 自定义阈值（秒），如果为null则使用默认阈值
      * @return bool 如果CRL即将过期或不存在则返回true
      */
-    public function isExpiringSoon(string $issuerDN): bool
+    public function isExpiringSoon(string $issuerDN, ?int $threshold = null): bool
     {
         $crl = $this->get($issuerDN);
         if ($crl === null) {
@@ -94,7 +95,8 @@ class CRLCache
         }
         
         $now = new DateTimeImmutable();
-        $expiringTime = new DateTimeImmutable('+' . $this->expiringThreshold . ' seconds');
+        $thresholdSeconds = $threshold ?? $this->expiringThreshold;
+        $expiringTime = new DateTimeImmutable('+' . $thresholdSeconds . ' seconds');
         
         return $nextUpdate <= $expiringTime;
     }
